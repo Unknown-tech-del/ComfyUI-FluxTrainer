@@ -32,16 +32,19 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
     def __init__(self):
         super().__init__()
         self.sample_prompts_te_outputs = None
+        self.train_text_encoder = False
 
     def assert_extra_args(self, args, train_dataset_group: train_util.DatasetGroup):
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             logger.warning("cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled")
             args.cache_text_encoder_outputs = True
 
-        if not args.network_train_unet_only:
+        self.train_text_encoder = not args.network_train_unet_only
+
+        if self.train_text_encoder and args.cache_text_encoder_outputs:
             raise ValueError(
-                "Z-Image LoRA training only supports network_train_unet_only=True for now "
-                "(training the Qwen3 text encoder is not implemented)"
+                "cache_text_encoder_outputs cannot be used when the text encoder is trained "
+                "(disable network_train_unet_only=False to train the Qwen3 text encoder, or turn off caching)"
             )
 
         train_dataset_group.verify_bucket_reso_steps(16)
@@ -84,15 +87,17 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         return None
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
-        if args.cache_text_encoder_outputs:
-            return None  # text encoder output is fully cached, network_train_unet_only is enforced
+        if args.cache_text_encoder_outputs and not self.train_text_encoder:
+            return None  # text encoder output is fully cached
         return text_encoders
 
     def get_text_encoders_train_flags(self, args, text_encoders):
-        return [False] * len(text_encoders)
+        return [self.train_text_encoder]
 
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
-        pass
+        # network's actual text_encoder_loras may end up empty even if train_text_encoder was
+        # requested (e.g. loading pre-trained transformer-only weights), so trust the network here
+        self.train_text_encoder = self.train_text_encoder and len(network.text_encoder_loras) > 0
 
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
@@ -226,10 +231,12 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_training_shift"] = args.training_shift
 
     def is_text_encoder_not_needed_for_training(self, args):
-        return args.cache_text_encoder_outputs
+        return args.cache_text_encoder_outputs and not self.train_text_encoder
 
     def prepare_text_encoder_grad_ckpt_workaround(self, index, text_encoder):
-        pass  # text encoder is never trained in this first pass
+        # set top parameter requires_grad = True for gradient checkpointing to work, same reasoning
+        # as T5XXL in sd3_train_network.py
+        text_encoder.embed_tokens.requires_grad_(True)
 
     def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
         text_encoder.to(te_weight_dtype)

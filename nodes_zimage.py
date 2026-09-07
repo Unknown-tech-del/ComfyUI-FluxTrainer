@@ -79,11 +79,13 @@ class InitZImageLoRATraining:
             "save_dtype": (["fp32", "fp16", "bf16", "fp8_e4m3fn", "fp8_e5m2"], {"default": "bf16", "tooltip": "the dtype to save checkpoints as"}),
             "sample_prompts": ("STRING", {"multiline": True, "default": "illustration of a kitten | photograph of a turtle", "tooltip": "validation sample prompts, for multiple prompts, separate by `|`"}),
             "gradient_checkpointing": (["enabled", "disabled"], {"default": "enabled", "tooltip": "use gradient checkpointing"}),
+            "train_text_encoder": (["disabled", "qwen3"], {"default": "disabled", "tooltip": "also train the Qwen3 text encoder as LoRA; incompatible with cache_text_encoder_outputs"}),
+            "text_encoder_lr": ("FLOAT", {"default": 0, "min": 0.0, "max": 10.0, "step": 0.000001, "tooltip": "text encoder learning rate, 0 = use learning_rate"}),
             },
             "optional": {
                 "additional_args": ("STRING", {"multiline": True, "default": "", "tooltip": "additional args to pass to the training command"}),
                 "resume_args": ("ARGS", {"default": "", "tooltip": "resume args to pass to the training command"}),
-                "block_args": ("ARGS", {"default": "", "tooltip": "limit which transformer blocks (in `layers`) get a LoRA, e.g. '0-15'"}),
+                "block_args": ("ARGS", {"default": "", "tooltip": "limit which transformer blocks get a LoRA, from a Flux Train Block Select node. Z-Image module names look like 'lora_unet_layers_5_attention_to_q' -- note the block-select node's '(start-end)' range shorthand only expands names containing '_blocks_', so for Z-Image list block names individually (comma-separated), e.g. 'lora_unet_layers_0,lora_unet_layers_1'"}),
                 "loss_args": ("ARGS", {"default": "", "tooltip": "loss args"}),
             },
             "hidden": {
@@ -98,7 +100,8 @@ class InitZImageLoRATraining:
 
     def init_training(self, zimage_models, dataset, optimizer_settings, sample_prompts, output_name,
                       gradient_dtype, save_dtype, additional_args=None, resume_args=None,
-                      block_args=None, gradient_checkpointing="enabled", prompt=None, extra_pnginfo=None, loss_args=None, **kwargs):
+                      block_args=None, gradient_checkpointing="enabled", train_text_encoder="disabled", text_encoder_lr=0,
+                      prompt=None, extra_pnginfo=None, loss_args=None, **kwargs):
         mm.soft_empty_cache()
 
         output_dir = os.path.abspath(kwargs.get("output_dir"))
@@ -168,9 +171,11 @@ class InitZImageLoRATraining:
             "output_name": f"{output_name}_rank{kwargs.get('network_dim')}_{save_dtype}",
             "loss_type": "l2",
             "alpha_mask": dataset["alpha_mask"],
-            "network_train_unet_only": True,
+            "network_train_unet_only": train_text_encoder == "disabled",
             "disable_mmap_load_safetensors": False,
         }
+        if train_text_encoder != "disabled":
+            config_dict["text_encoder_lr"] = text_encoder_lr
 
         gradient_dtype_settings = {
             "fp16": {"full_fp16": True, "full_bf16": False, "mixed_precision": "fp16"},
@@ -181,6 +186,8 @@ class InitZImageLoRATraining:
         additional_network_args = []
         if block_args:
             additional_network_args.append(block_args["include"])
+        if train_text_encoder != "disabled":
+            additional_network_args.append("train_text_encoder=True")
         if hasattr(args, 'network_args') and isinstance(args.network_args, list):
             args.network_args.extend(additional_network_args)
         else:
