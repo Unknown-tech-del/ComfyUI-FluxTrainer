@@ -50,11 +50,14 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         train_dataset_group.verify_bucket_reso_steps(16)
 
     def load_target_model(self, args, weight_dtype, accelerator):
-        loading_dtype = None if args.fp8_base else weight_dtype
-
-        transformer = zimage_utils.load_transformer(args.pretrained_model_name_or_path, loading_dtype, "cpu")
         if args.fp8_base:
-            transformer.to(torch.float8_e4m3fn)
+            # unlike Kohya's own hand-rolled Flux/SD3 model classes (which have bespoke fp8-aware
+            # forward methods), diffusers' stock ZImageTransformer2DModel forward pass breaks under
+            # a naive whole-model float8 cast (e.g. torch.where() mixing float8 weights with bf16
+            # activations raises "Promotion for Float8 Types is not supported"). Not supported yet.
+            raise ValueError("fp8_base is not supported for Z-Image training yet (breaks diffusers' forward pass)")
+
+        transformer = zimage_utils.load_transformer(args.pretrained_model_name_or_path, weight_dtype, "cpu")
 
         text_encoder = zimage_utils.load_text_encoder(
             args.text_encoder if args.text_encoder else args.pretrained_model_name_or_path, weight_dtype, "cpu"
@@ -204,14 +207,15 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
 
         cap_feats_list = build_cap_feats_list(cap_feats, attn_mask)
 
-        # ZImageTransformer2DModel takes x as a list of (C, H, W) tensors (one per sample) and
-        # timesteps normalized to [0, 1], matching diffusers' ZImagePipeline call convention.
-        x_list = [noisy_model_input[i] for i in range(noisy_model_input.shape[0])]
+        # ZImageTransformer2DModel takes x as a list of (C, F, H, W) tensors (one per sample --
+        # F is a frame/temporal dim, 1 for plain images) and timesteps normalized to [0, 1],
+        # matching diffusers' ZImagePipeline call convention.
+        x_list = [noisy_model_input[i].unsqueeze(1) for i in range(noisy_model_input.shape[0])]
         t_norm = (timesteps / 1000.0).to(noisy_model_input.dtype)
 
         with accelerator.autocast():
             model_pred = unet(x_list, t_norm, cap_feats_list, return_dict=False)[0]
-            model_pred = torch.stack(model_pred, dim=0)
+            model_pred = torch.stack([p.squeeze(1) for p in model_pred], dim=0)
 
         # rectified-flow / flow-matching target: velocity from data to noise
         target = noise - latents
@@ -250,10 +254,11 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
-    train_util.add_dit_training_arguments(parser)
+    # train_network.setup_parser() already calls train_util.add_dit_training_arguments() internally
+    # (cache_text_encoder_outputs, etc.) -- calling it again here would raise a duplicate-argument error.
     sd3_train_utils.add_sd3_training_arguments(parser)  # reuse: weighting_scheme, logit_mean/std, mode_scale, training_shift, min/max_timestep
     parser.add_argument("--text_encoder", type=str, default=None, help="path to Z-Image's Qwen3 text encoder, if separate from the transformer checkpoint")
-    parser.add_argument("--vae", type=str, default=None, help="path to Z-Image's VAE, if separate from the transformer checkpoint")
+    # --vae already exists on the base parser (added generically for SDXL/SD3-style trainers)
     parser.add_argument("--max_sequence_length", type=int, default=512, help="max token length for the Qwen3 text encoder")
     return parser
 
