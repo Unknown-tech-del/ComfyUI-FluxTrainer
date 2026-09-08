@@ -74,7 +74,7 @@ class InitZImageLoRATraining:
             "cache_text_encoder_outputs": (["disk", "memory", "disabled"], {"tooltip": "caches text encoder outputs"}),
             "training_shift": ("FLOAT", {"default": 3.0, "min": 0.0, "max": 10.0, "step": 0.0001, "tooltip": "shift value for the training distribution of timesteps"}),
             "max_sequence_length": ("INT", {"default": 512, "min": 32, "max": 1024, "step": 8, "tooltip": "max token length for the Qwen3 text encoder"}),
-            "fp8_base": ("BOOLEAN", {"default": False, "tooltip": "NOT SUPPORTED YET for Z-Image -- breaks diffusers' ZImageTransformer2DModel forward pass. Leave off; use cache_text_encoder_outputs + gradient_checkpointing to save memory instead."}),
+            "fp8_base": ("BOOLEAN", {"default": False, "tooltip": "use fp8 for the transformer to save VRAM. Experimental for Z-Image: uses a patched local copy of the model class (library/zimage_models.py) since the stock diffusers class isn't fp8-safe -- report any new dtype errors if you hit them."}),
             "gradient_dtype": (["fp32", "fp16", "bf16"], {"default": "bf16", "tooltip": "the actual dtype training uses"}),
             "save_dtype": (["fp32", "fp16", "bf16", "fp8_e4m3fn", "fp8_e5m2"], {"default": "bf16", "tooltip": "the dtype to save checkpoints as"}),
             "sample_prompts": ("STRING", {"multiline": True, "default": "illustration of a kitten | photograph of a turtle", "tooltip": "validation sample prompts, for multiple prompts, separate by `|`"}),

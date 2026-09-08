@@ -50,14 +50,16 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         train_dataset_group.verify_bucket_reso_steps(16)
 
     def load_target_model(self, args, weight_dtype, accelerator):
-        if args.fp8_base:
-            # unlike Kohya's own hand-rolled Flux/SD3 model classes (which have bespoke fp8-aware
-            # forward methods), diffusers' stock ZImageTransformer2DModel forward pass breaks under
-            # a naive whole-model float8 cast (e.g. torch.where() mixing float8 weights with bf16
-            # activations raises "Promotion for Float8 Types is not supported"). Not supported yet.
-            raise ValueError("fp8_base is not supported for Z-Image training yet (breaks diffusers' forward pass)")
+        loading_dtype = None if args.fp8_base else weight_dtype
 
-        transformer = zimage_utils.load_transformer(args.pretrained_model_name_or_path, weight_dtype, "cpu")
+        # library/zimage_models.py is our own patched vendored copy of diffusers' model (not the
+        # diffusers package's own class) -- it fixes the two ops that broke under a blanket fp8
+        # cast (RMSNorm's elementwise multiply, and _prepare_sequence's torch.where), matching the
+        # defensive dtype-casting Kohya's hand-written Flux/SD3 model classes already do.
+        transformer = zimage_utils.load_transformer(args.pretrained_model_name_or_path, loading_dtype, "cpu")
+        if args.fp8_base:
+            fp8_dtype = torch.float8_e4m3fn if args.fp8_dtype == "e4m3" else torch.float8_e5m2
+            transformer.to(fp8_dtype)
 
         text_encoder = zimage_utils.load_text_encoder(
             args.text_encoder if args.text_encoder else args.pretrained_model_name_or_path, weight_dtype, "cpu"

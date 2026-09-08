@@ -31,7 +31,9 @@ def load_transformer(
     device: str = "cpu",
     subfolder: str = "transformer",
 ):
-    from diffusers import ZImageTransformer2DModel
+    # our own vendored copy (library/zimage_models.py), not diffusers' -- patched to tolerate
+    # fp8_base (see that file's header comment for why the stock diffusers class breaks under it)
+    from .zimage_models import ZImageTransformer2DModel
 
     if _is_diffusers_dir(pretrained_model_name_or_path):
         transformer = ZImageTransformer2DModel.from_pretrained(
