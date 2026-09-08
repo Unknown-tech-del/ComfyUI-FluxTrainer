@@ -33,7 +33,9 @@ class ZImageTokenizeStrategy(TokenizeStrategy):
         from .zimage_utils import _resolve_component_path
 
         self.max_sequence_length = max_sequence_length
-        load_path, kwargs = _resolve_component_path(pretrained_model_name_or_path, "text_encoder")
+        # Z-Image's tokenizer files live in their own top-level `tokenizer/` folder, separate from
+        # `text_encoder/` (which holds only the model weights/config) -- diffusers convention.
+        load_path, kwargs = _resolve_component_path(pretrained_model_name_or_path, "tokenizer")
         self.tokenizer = AutoTokenizer.from_pretrained(load_path, cache_dir=tokenizer_cache_dir, **kwargs)
 
     def tokenize(self, text: Union[str, List[str]]) -> List[torch.Tensor]:

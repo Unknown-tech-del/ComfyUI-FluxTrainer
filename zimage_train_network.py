@@ -32,26 +32,32 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
     def __init__(self):
         super().__init__()
         self.sample_prompts_te_outputs = None
+        self.train_text_encoder = False
 
     def assert_extra_args(self, args, train_dataset_group: train_util.DatasetGroup):
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             logger.warning("cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled")
             args.cache_text_encoder_outputs = True
 
-        if not args.network_train_unet_only:
+        self.train_text_encoder = not args.network_train_unet_only
+
+        if self.train_text_encoder and args.cache_text_encoder_outputs:
             raise ValueError(
-                "Z-Image LoRA training only supports network_train_unet_only=True for now "
-                "(training the Qwen3 text encoder is not implemented)"
+                "cache_text_encoder_outputs cannot be used when the text encoder is trained "
+                "(disable network_train_unet_only=False to train the Qwen3 text encoder, or turn off caching)"
             )
 
         train_dataset_group.verify_bucket_reso_steps(16)
 
     def load_target_model(self, args, weight_dtype, accelerator):
-        loading_dtype = None if args.fp8_base else weight_dtype
-
-        transformer = zimage_utils.load_transformer(args.pretrained_model_name_or_path, loading_dtype, "cpu")
         if args.fp8_base:
-            transformer.to(torch.float8_e4m3fn)
+            # unlike Kohya's own hand-rolled Flux/SD3 model classes (which have bespoke fp8-aware
+            # forward methods), diffusers' stock ZImageTransformer2DModel forward pass breaks under
+            # a naive whole-model float8 cast (e.g. torch.where() mixing float8 weights with bf16
+            # activations raises "Promotion for Float8 Types is not supported"). Not supported yet.
+            raise ValueError("fp8_base is not supported for Z-Image training yet (breaks diffusers' forward pass)")
+
+        transformer = zimage_utils.load_transformer(args.pretrained_model_name_or_path, weight_dtype, "cpu")
 
         text_encoder = zimage_utils.load_text_encoder(
             args.text_encoder if args.text_encoder else args.pretrained_model_name_or_path, weight_dtype, "cpu"
@@ -84,15 +90,17 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         return None
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
-        if args.cache_text_encoder_outputs:
-            return None  # text encoder output is fully cached, network_train_unet_only is enforced
+        if args.cache_text_encoder_outputs and not self.train_text_encoder:
+            return None  # text encoder output is fully cached
         return text_encoders
 
     def get_text_encoders_train_flags(self, args, text_encoders):
-        return [False] * len(text_encoders)
+        return [self.train_text_encoder]
 
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
-        pass
+        # network's actual text_encoder_loras may end up empty even if train_text_encoder was
+        # requested (e.g. loading pre-trained transformer-only weights), so trust the network here
+        self.train_text_encoder = self.train_text_encoder and len(network.text_encoder_loras) > 0
 
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
@@ -199,14 +207,15 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
 
         cap_feats_list = build_cap_feats_list(cap_feats, attn_mask)
 
-        # ZImageTransformer2DModel takes x as a list of (C, H, W) tensors (one per sample) and
-        # timesteps normalized to [0, 1], matching diffusers' ZImagePipeline call convention.
-        x_list = [noisy_model_input[i] for i in range(noisy_model_input.shape[0])]
+        # ZImageTransformer2DModel takes x as a list of (C, F, H, W) tensors (one per sample --
+        # F is a frame/temporal dim, 1 for plain images) and timesteps normalized to [0, 1],
+        # matching diffusers' ZImagePipeline call convention.
+        x_list = [noisy_model_input[i].unsqueeze(1) for i in range(noisy_model_input.shape[0])]
         t_norm = (timesteps / 1000.0).to(noisy_model_input.dtype)
 
         with accelerator.autocast():
             model_pred = unet(x_list, t_norm, cap_feats_list, return_dict=False)[0]
-            model_pred = torch.stack(model_pred, dim=0)
+            model_pred = torch.stack([p.squeeze(1) for p in model_pred], dim=0)
 
         # rectified-flow / flow-matching target: velocity from data to noise
         target = noise - latents
@@ -226,10 +235,12 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_training_shift"] = args.training_shift
 
     def is_text_encoder_not_needed_for_training(self, args):
-        return args.cache_text_encoder_outputs
+        return args.cache_text_encoder_outputs and not self.train_text_encoder
 
     def prepare_text_encoder_grad_ckpt_workaround(self, index, text_encoder):
-        pass  # text encoder is never trained in this first pass
+        # set top parameter requires_grad = True for gradient checkpointing to work, same reasoning
+        # as T5XXL in sd3_train_network.py
+        text_encoder.embed_tokens.requires_grad_(True)
 
     def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
         text_encoder.to(te_weight_dtype)
@@ -243,10 +254,11 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
-    train_util.add_dit_training_arguments(parser)
+    # train_network.setup_parser() already calls train_util.add_dit_training_arguments() internally
+    # (cache_text_encoder_outputs, etc.) -- calling it again here would raise a duplicate-argument error.
     sd3_train_utils.add_sd3_training_arguments(parser)  # reuse: weighting_scheme, logit_mean/std, mode_scale, training_shift, min/max_timestep
     parser.add_argument("--text_encoder", type=str, default=None, help="path to Z-Image's Qwen3 text encoder, if separate from the transformer checkpoint")
-    parser.add_argument("--vae", type=str, default=None, help="path to Z-Image's VAE, if separate from the transformer checkpoint")
+    # --vae already exists on the base parser (added generically for SDXL/SD3-style trainers)
     parser.add_argument("--max_sequence_length", type=int, default=512, help="max token length for the Qwen3 text encoder")
     return parser
 
