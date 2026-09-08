@@ -1,0 +1,421 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 7,
+  "nodes": [
+    {
+      "id": 9,
+      "type": "Note",
+      "pos": [-1180, -260],
+      "size": [900, 260],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "Z-Image LoRA training (experimental, transformer-only by default).\n\nmodel_path accepts a local diffusers-format directory (transformer/ text_encoder/ vae/ tokenizer/ subfolders) or a HF hub repo id, e.g. Tongyi-MAI/Z-Image-Turbo.\n\nThis pipeline loads models via diffusers directly (not Kohya's own model classes like the Flux/SD3 trainers), since Kohya's sd-scripts has no Z-Image support at all.\n\nMemory: leave fp8_base OFF -- it breaks Z-Image's diffusers forward pass. Use cache_text_encoder_outputs + gradient_checkpointing instead; validated at ~14GB VRAM for a single 512x512 image on an RTX 4090.\n\nSample-image generation during training is not implemented yet -- ZImageTrainLoop only reports loss, it won't produce preview images.\n\nSet train_text_encoder to 'qwen3' to also train the Qwen3 text encoder as LoRA (must disable cache_text_encoder_outputs if you do)."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 1,
+      "type": "TrainDatasetGeneralConfig",
+      "pos": [-1180, 60],
+      "size": [320, 202],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "dataset_general",
+          "type": "JSON",
+          "links": [1],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TrainDatasetGeneralConfig"
+      },
+      "widgets_values": [
+        false,
+        false,
+        false,
+        0,
+        false,
+        false,
+        ".txt"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "TrainDatasetAdd",
+      "pos": [-820, 60],
+      "size": [300, 340],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "dataset_config",
+          "type": "JSON",
+          "link": 1
+        },
+        {
+          "name": "regularization",
+          "type": "JSON",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "dataset",
+          "type": "JSON",
+          "links": [2],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TrainDatasetAdd"
+      },
+      "widgets_values": [
+        512,
+        512,
+        1,
+        "../datasets/my_zimage_dataset",
+        "",
+        true,
+        false,
+        1,
+        256,
+        1024
+      ]
+    },
+    {
+      "id": 3,
+      "type": "OptimizerConfig",
+      "pos": [-820, 440],
+      "size": [300, 244],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "optimizer_settings",
+          "type": "ARGS",
+          "links": [3],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OptimizerConfig"
+      },
+      "widgets_values": [
+        "adamw8bit",
+        1,
+        "constant",
+        0,
+        1,
+        1,
+        5,
+        ""
+      ]
+    },
+    {
+      "id": 4,
+      "type": "ZImageModelSelect",
+      "pos": [-450, 60],
+      "size": [400, 140],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "lora_path",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "lora_path"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "zimage_models",
+          "type": "TRAIN_ZIMAGE_MODELS",
+          "links": [4],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZImageModelSelect"
+      },
+      "widgets_values": [
+        "Tongyi-MAI/Z-Image-Turbo",
+        "",
+        ""
+      ]
+    },
+    {
+      "id": 5,
+      "type": "InitZImageLoRATraining",
+      "pos": [0, 60],
+      "size": [420, 760],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "zimage_models",
+          "type": "TRAIN_ZIMAGE_MODELS",
+          "link": 4
+        },
+        {
+          "name": "dataset",
+          "type": "JSON",
+          "link": 2
+        },
+        {
+          "name": "optimizer_settings",
+          "type": "ARGS",
+          "link": 3
+        },
+        {
+          "name": "resume_args",
+          "type": "ARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "block_args",
+          "type": "ARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "loss_args",
+          "type": "ARGS",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "network_trainer",
+          "type": "NETWORKTRAINER",
+          "links": [5],
+          "slot_index": 0
+        },
+        {
+          "name": "epochs_count",
+          "type": "INT",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "args",
+          "type": "KOHYA_ARGS",
+          "links": null,
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "InitZImageLoRATraining"
+      },
+      "widgets_values": [
+        "zimage_lora",
+        "zimage_trainer_output",
+        16,
+        16,
+        0.0001,
+        1500,
+        "disk",
+        "disk",
+        3.0,
+        512,
+        false,
+        "bf16",
+        "bf16",
+        "illustration of a kitten | photograph of a turtle",
+        "enabled",
+        "disabled",
+        0,
+        ""
+      ]
+    },
+    {
+      "id": 6,
+      "type": "ZImageTrainLoop",
+      "pos": [470, 60],
+      "size": [320, 80],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "network_trainer",
+          "type": "NETWORKTRAINER",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "network_trainer",
+          "type": "NETWORKTRAINER",
+          "links": [6],
+          "slot_index": 0
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZImageTrainLoop"
+      },
+      "widgets_values": [
+        500
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 7,
+      "type": "ZImageTrainLoRASave",
+      "pos": [470, 190],
+      "size": [320, 100],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "network_trainer",
+          "type": "NETWORKTRAINER",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "network_trainer",
+          "type": "NETWORKTRAINER",
+          "links": [7],
+          "slot_index": 0
+        },
+        {
+          "name": "lora_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "links": null,
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZImageTrainLoRASave"
+      },
+      "widgets_values": [
+        false,
+        false
+      ]
+    },
+    {
+      "id": 8,
+      "type": "ZImageTrainEnd",
+      "pos": [470, 330],
+      "size": [320, 100],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "network_trainer",
+          "type": "NETWORKTRAINER",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "lora_name",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "metadata",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "lora_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZImageTrainEnd"
+      },
+      "widgets_values": [
+        true
+      ],
+      "color": "#322",
+      "bgcolor": "#533"
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "JSON"],
+    [2, 2, 0, 5, 1, "JSON"],
+    [3, 3, 0, 5, 2, "ARGS"],
+    [4, 4, 0, 5, 0, "TRAIN_ZIMAGE_MODELS"],
+    [5, 5, 0, 6, 0, "NETWORKTRAINER"],
+    [6, 6, 0, 7, 0, "NETWORKTRAINER"],
+    [7, 7, 0, 8, 0, "NETWORKTRAINER"]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Dataset",
+      "bounding": [-1200, -20, 700, 800],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Model + Init",
+      "bounding": [-470, -20, 900, 840],
+      "color": "#b06634",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "Train loop (re-run/increase steps to keep training)",
+      "bounding": [450, -20, 360, 460],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1,
+      "offset": [0, 0]
+    }
+  },
+  "version": 0.4
+}
