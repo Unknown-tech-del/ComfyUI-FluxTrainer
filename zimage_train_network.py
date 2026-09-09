@@ -33,6 +33,7 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         super().__init__()
         self.sample_prompts_te_outputs = None
         self.train_text_encoder = False
+        self.is_swapping_blocks = False
 
     def assert_extra_args(self, args, train_dataset_group: train_util.DatasetGroup):
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
@@ -60,6 +61,13 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         if args.fp8_base:
             fp8_dtype = torch.float8_e4m3fn if args.fp8_dtype == "e4m3" else torch.float8_e5m2
             transformer.to(fp8_dtype)
+
+        self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
+        if self.is_swapping_blocks:
+            # swap blocks between CPU and GPU during forward/backward to reduce peak VRAM, same
+            # mechanism as sd3_train_network.py / flux_train_network_comfy.py
+            logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
+            transformer.enable_block_swap(args.blocks_to_swap, accelerator.device)
 
         text_encoder = zimage_utils.load_text_encoder(
             args.text_encoder if args.text_encoder else args.pretrained_model_name_or_path, weight_dtype, "cpu"
@@ -252,6 +260,18 @@ class ZImageNetworkTrainer(train_network.NetworkTrainer):
         if text_encoder_outputs_list is not None:
             text_encoding_strategy: strategy_zimage.ZImageTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
             batch["text_encoder_outputs_list"] = text_encoding_strategy.drop_cached_text_encoder_outputs(*text_encoder_outputs_list)
+
+    def prepare_unet_with_accelerator(self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module) -> torch.nn.Module:
+        if not self.is_swapping_blocks:
+            return super().prepare_unet_with_accelerator(args, accelerator, unet)
+
+        # if blocks are being swapped, we don't let accelerator move the whole model to device
+        transformer = unet
+        transformer = accelerator.prepare(transformer, device_placement=[not self.is_swapping_blocks])
+        accelerator.unwrap_model(transformer).move_to_device_except_swap_blocks(accelerator.device)
+        accelerator.unwrap_model(transformer).prepare_block_swap_before_forward()
+
+        return transformer
 
 
 def setup_parser() -> argparse.ArgumentParser:

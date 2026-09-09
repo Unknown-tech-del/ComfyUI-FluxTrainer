@@ -520,6 +520,41 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOr
 
         self.rope_embedder = RopeEmbedder(theta=rope_theta, axes_dims=axes_dims, axes_lens=axes_lens)
 
+        # block swap (CPU/GPU offload of `self.layers` during training), same mechanism and API as
+        # Kohya's Flux/SD3 model classes -- see enable_block_swap/move_to_device_except_swap_blocks/
+        # prepare_block_swap_before_forward below and the branch in forward()'s main layer loop.
+        # noise_refiner/context_refiner are left alone (only 2 layers each, not worth swapping).
+        self.blocks_to_swap = None
+        self.offloader = None
+        self.num_main_blocks = len(self.layers)
+
+    # NOTE: `device` and `dtype` properties come from ModelMixin already (next(self.parameters())...)
+
+    def enable_block_swap(self, num_blocks: int, device: torch.device):
+        from .custom_offloading_utils import ModelOffloader
+
+        self.blocks_to_swap = num_blocks
+        assert (
+            num_blocks <= self.num_main_blocks - 2
+        ), f"Cannot swap more than {self.num_main_blocks - 2} blocks. Requested {num_blocks}."
+        self.offloader = ModelOffloader(self.layers, self.num_main_blocks, num_blocks, device)
+
+    def move_to_device_except_swap_blocks(self, device: torch.device):
+        # assume model is on cpu. do not move `layers` to device to reduce temporary memory usage
+        if self.blocks_to_swap:
+            save_layers = self.layers
+            self.layers = None
+
+        self.to(device)
+
+        if self.blocks_to_swap:
+            self.layers = save_layers
+
+    def prepare_block_swap_before_forward(self):
+        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            return
+        self.offloader.prepare_block_devices_before_forward(self.layers)
+
     def unpatchify(
         self,
         x: list[torch.Tensor],
@@ -1088,16 +1123,35 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOr
         )
 
         # Main transformer layers
-        for layer_idx, layer in enumerate(self.layers):
-            unified = (
-                self._gradient_checkpointing_func(
-                    layer, unified, unified_mask, unified_freqs, adaln_input, unified_noise_tensor, t_noisy, t_clean
+        if not self.blocks_to_swap:
+            for layer_idx, layer in enumerate(self.layers):
+                unified = (
+                    self._gradient_checkpointing_func(
+                        layer, unified, unified_mask, unified_freqs, adaln_input, unified_noise_tensor, t_noisy, t_clean
+                    )
+                    if torch.is_grad_enabled() and self.gradient_checkpointing
+                    else layer(unified, unified_mask, unified_freqs, adaln_input, unified_noise_tensor, t_noisy, t_clean)
                 )
-                if torch.is_grad_enabled() and self.gradient_checkpointing
-                else layer(unified, unified_mask, unified_freqs, adaln_input, unified_noise_tensor, t_noisy, t_clean)
-            )
-            if controlnet_block_samples is not None and layer_idx in controlnet_block_samples:
-                unified = unified + controlnet_block_samples[layer_idx]
+                if controlnet_block_samples is not None and layer_idx in controlnet_block_samples:
+                    unified = unified + controlnet_block_samples[layer_idx]
+        else:
+            # block swap: only `self.num_main_blocks - blocks_to_swap` blocks live on GPU at once;
+            # the rest sit on CPU and get swapped in/out around each block's forward/backward
+            # (see library/custom_offloading_utils.py's ModelOffloader for the actual mechanism)
+            for layer_idx, layer in enumerate(self.layers):
+                self.offloader.wait_for_block(layer_idx)
+
+                unified = (
+                    self._gradient_checkpointing_func(
+                        layer, unified, unified_mask, unified_freqs, adaln_input, unified_noise_tensor, t_noisy, t_clean
+                    )
+                    if torch.is_grad_enabled() and self.gradient_checkpointing
+                    else layer(unified, unified_mask, unified_freqs, adaln_input, unified_noise_tensor, t_noisy, t_clean)
+                )
+                if controlnet_block_samples is not None and layer_idx in controlnet_block_samples:
+                    unified = unified + controlnet_block_samples[layer_idx]
+
+                self.offloader.submit_move_blocks(self.layers, layer_idx)
 
         unified = (
             self.all_final_layer[f"{patch_size}-{f_patch_size}"](
